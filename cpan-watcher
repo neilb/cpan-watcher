@@ -1,0 +1,157 @@
+#!/usr/local/bin/perl
+#
+# cpan-watcher
+#
+# Check new things on CPAN:
+#   1. Are new packages confusable with packages in other dists?
+#   2. Are there packages which have names outside the dist's namespace?
+#
+# Expects to find a directory "cpan-watcher" in your home directory
+#
+use 5.010;
+use strict;
+use warnings;
+use HTTP::Tiny;
+use File::Slurper qw/ write_binary /;
+use PerlIO::gzip;
+use CPAN::DistnameInfo;
+use Text::Levenshtein::Damerau::XS qw/ xs_edistance /;
+
+my $CACHEDIR = "$ENV{HOME}/cpan-watcher";
+my $PREVPREV = "$CACHEDIR/previous-previous.txt.gz";
+my $PREVIOUS = "$CACHEDIR/previous.txt.gz";
+my $CURRENT  = "$CACHEDIR/current.txt.gz";
+my $INDEXURL = "http://cpan.org/modules/02packages.details.txt.gz";
+my $distance = 1;
+my %curr_packages;
+my %prev_packages;
+my %curr_dists;
+my %prev_dists;
+
+
+shift_current_to_previous();
+get_current();
+parse_indexes();
+analyse_new_things();
+
+
+sub shift_current_to_previous
+{
+    if (not -f $CURRENT) {
+        warn "No current file found. I'll grab one for you.\n";
+        get_current();
+        die "Got it -- now run me again tomorrow!\n";
+    }
+    if (-f $PREVIOUS) {
+        rename($PREVIOUS, $PREVPREV)
+            || die "can't rename $PREVIOUS to $PREVPREV: $!\n";
+    }
+
+    rename($CURRENT, $PREVIOUS)
+        || die "can't rename $CURRENT to $PREVIOUS: $!\n";
+}
+
+
+sub get_current
+{
+    my $ua = HTTP::Tiny->new()
+             // die "failed to create user agent: $!\n";
+    my $response = $ua->get($INDEXURL);
+
+    if (not $response->{success}) {
+        die "failed to get index ($INDEXURL): $response->{status} $response->{reason}\n";
+    }
+
+    write_binary($CURRENT, $response->{content});
+}
+
+
+sub parse_indexes
+{
+    parse_cpan_index($PREVIOUS, \%prev_packages, \%prev_dists);
+    parse_cpan_index($CURRENT,  \%curr_packages, \%curr_dists);
+}
+
+
+sub analyse_new_things
+{
+    my (%new_dists, %new_packages);
+
+    foreach my $package (sort keys %curr_packages) {
+        $new_packages{$package} = $curr_packages{$package} unless exists $prev_packages{$package};
+    }
+    foreach my $dist (sort keys %curr_dists) {
+        $new_dists{$dist} = $curr_dists{$dist} unless exists $prev_dists{$dist};
+    }
+
+    foreach my $package (sort keys %new_packages) {
+        my $min = length($package) - $distance;
+        my $max = $min + 2 * $distance;
+        foreach my $other_package (sort keys %curr_packages) {
+            next if $other_package eq $package;
+
+            # don't worry if they're in the same distribution
+            next if $curr_packages{$package} eq $curr_packages{$other_package};
+
+            my $len = length($other_package);
+            next unless $len >= $min && $len <= $max;
+
+            if (xs_edistance($package, $other_package) == $distance) {
+                printf "new package %s (dist %s) is confusable with package %s (dist %s)\n",
+                       $package, $new_packages{$package}, $other_package, $curr_packages{$other_package};
+            }
+        }
+
+        my $namespace = $curr_packages{$package};
+        $namespace =~ s/-/::/g;
+        if ($package !~ /^$namespace/) {
+            printf "new package %s is in dist %s, but doesn't match expected namespace (%s)\n",
+                   $package, $new_packages{$package}, $namespace;
+        }
+    }
+}
+
+
+sub parse_cpan_index
+{
+    my ($index_file, $packages, $dists) = @_;
+    open(my $fh, '<:gzip', $index_file)
+        || die "can't read $index_file: $!\n";
+    my $inheader = 1;
+    local $_;
+
+    while (<$fh>) {
+        if ($inheader && /^$/) {
+            $inheader = 0;
+            next;
+        }
+        next if $inheader;
+        chomp;
+        my ($package,$version,$release) = split(/\s+/, $_);
+        my $distname = distname_from_release($release);
+        if (not defined $distname) {
+            # typically these are old things like
+            #   T/TO/TOMC/scripts/CS-Talk/source/dstructs/trees/StrNum.pm.gz
+            next;
+        }
+        $packages->{$package} = $distname;
+        push(@{ $dists->{$distname} }, $package);
+    }
+    close($fh);
+}
+
+
+sub distname_from_release
+{
+    my $release = shift;
+    state %map;
+
+    # Should just Memoize this
+    if (not exists $map{$release}) {
+        my $di = CPAN::DistnameInfo->new($release);
+        $map{$release} = $di->dist;
+    }
+
+    return $map{$release};
+}
+
