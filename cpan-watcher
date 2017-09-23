@@ -56,13 +56,15 @@ sub get_current
 {
     my $ua = HTTP::Tiny->new()
              // die "failed to create user agent: $!\n";
+    print STDERR "Getting index ... ";
     my $response = $ua->get($INDEXURL);
 
     if (not $response->{success}) {
-        die "failed to get index ($INDEXURL): $response->{status} $response->{reason}\n";
+        die "failed to get $INDEXURL: $response->{status} $response->{reason}\n";
     }
 
     write_binary($CURRENT, $response->{content});
+    print STDERR "ok\n";
 }
 
 
@@ -83,6 +85,11 @@ sub analyse_new_things
     foreach my $dist (sort keys %curr_dists) {
         $new_dists{$dist} = $curr_dists{$dist} unless exists $prev_dists{$dist};
     }
+    my @new_package_list = sort keys %new_packages;
+    return unless @new_package_list > 0;
+
+    printf STDERR "checking %d new package%s ...\n", int(@new_package_list),
+                  int(@new_package_list) > 1 ? 's' : '';
 
     foreach my $package (sort keys %new_packages) {
         my $min = length($package) - $distance;
