@@ -86,11 +86,15 @@ sub analyse_new_things
         $new_dists{$dist} = $curr_dists{$dist} unless exists $prev_dists{$dist};
     }
     my @new_package_list = sort keys %new_packages;
-    return unless @new_package_list > 0;
+    if (@new_package_list == 0) {
+        print "No new packages to check\n";
+        return;
+    }
 
     printf STDERR "checking %d new package%s ...\n", int(@new_package_list),
                   int(@new_package_list) > 1 ? 's' : '';
 
+    my $nwarnings = 0;
     foreach my $package (sort keys %new_packages) {
         my $min = length($package) - $distance;
         my $max = $min + 2 * $distance;
@@ -104,6 +108,7 @@ sub analyse_new_things
             next unless $len >= $min && $len <= $max;
 
             if (xs_edistance($package, $other_package) == $distance) {
+                ++$nwarnings;
                 printf "new package %s (dist %s) is confusable with package %s (dist %s)\n",
                        $package, $new_packages{$package}, $other_package, $curr_packages{$other_package};
             }
@@ -112,10 +117,12 @@ sub analyse_new_things
         my $namespace = $curr_packages{$package};
         $namespace =~ s/-/::/g;
         if ($package !~ /^$namespace/) {
+            ++$nwarnings;
             printf "new package %s is in dist %s, but doesn't match expected namespace (%s)\n",
                    $package, $new_packages{$package}, $namespace;
         }
     }
+    print "all packages ok\n" if $nwarnings == 0;
 }
 
 
