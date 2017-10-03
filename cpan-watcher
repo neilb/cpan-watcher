@@ -17,12 +17,14 @@ use PerlIO::gzip;
 use CPAN::DistnameInfo;
 use Text::Levenshtein::Damerau::XS qw/ xs_edistance /;
 
-my $CACHEDIR = "$ENV{HOME}/cpan-watcher";
-my $PREVPREV = "$CACHEDIR/previous-previous.txt.gz";
-my $PREVIOUS = "$CACHEDIR/previous.txt.gz";
-my $CURRENT  = "$CACHEDIR/current.txt.gz";
-my $INDEXURL = "http://cpan.org/modules/02packages.details.txt.gz";
-my $distance = 1;
+my $CACHEDIR  = "$ENV{HOME}/cpan-watcher";
+my $PREVPREV  = "$CACHEDIR/previous-previous.txt.gz";
+my $PREVIOUS  = "$CACHEDIR/previous.txt.gz";
+my $CURRENT   = "$CACHEDIR/current.txt.gz";
+my $PERMSFILE = "$CACHEDIR/06perms.txt.gz";
+my $INDEXURL  = "http://cpan.org/modules/02packages.details.txt.gz";
+my $PERMSURL  = "http://cpan.org/modules/06perms.txt.gz";
+my $distance  = 1;
 my %curr_packages;
 my %prev_packages;
 my %curr_dists;
@@ -32,6 +34,7 @@ my %prev_dists;
 shift_current_to_previous();
 get_current();
 parse_indexes();
+check_perms();
 analyse_new_things();
 
 
@@ -64,6 +67,15 @@ sub get_current
     }
 
     write_binary($CURRENT, $response->{content});
+    print STDERR "ok\n";
+
+    print STDERR "Getting 06perms ... ";
+    $response = $ua->get($PERMSURL);
+
+    if (not $response->{success}) {
+        die "failed to get $PERMSURL: $response->{status} $response->{reason}\n";
+    }
+    write_binary($PERMSFILE, $response->{content});
     print STDERR "ok\n";
 }
 
@@ -150,6 +162,37 @@ sub parse_cpan_index
         }
         $packages->{$package} = $distname;
         push(@{ $dists->{$distname} }, $package);
+    }
+    close($fh);
+}
+
+sub check_perms
+{
+    my $nwarnings = 0;
+    my $nperms    = 0;
+    open(my $fh, '<:gzip', $PERMSFILE)
+        || die "can't read $PERMSFILE: $!\n";
+    my $inheader = 1;
+    local $_;
+
+    while (<$fh>) {
+        if ($inheader && /^$/) {
+            $inheader = 0;
+            next;
+        }
+        next if $inheader;
+        chomp;
+        my ($package,$author,$perm) = split(/,/, $_);
+        $nperms++;
+
+        if ($author =~ m!^(NEEDHELP|HANDOFF)$! && $perm ne 'c') {
+            print "Unexpected permission for '$1': $_\n";
+            ++$nwarnings;
+        }
+
+    }
+    if ($nwarnings == 0) {
+        print "$nperms permissions checked out just fine\n";
     }
     close($fh);
 }
